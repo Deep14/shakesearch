@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	//"sync"
 )
 
 func main() {
@@ -37,7 +38,7 @@ func main() {
 
 type Searcher struct {
 	CompleteWorks string
-	SuffixArray   *suffixarray.Index
+	SuffixArray    *suffixarray.Index
 }
 
 func handleSearch(searcher Searcher) func(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +49,7 @@ func handleSearch(searcher Searcher) func(w http.ResponseWriter, r *http.Request
 			w.Write([]byte("missing search query in URL params"))
 			return
 		}
+
 		results := searcher.Search(query[0])
 		buf := &bytes.Buffer{}
 		enc := json.NewEncoder(buf)
@@ -72,11 +74,44 @@ func (s *Searcher) Load(filename string) error {
 	return nil
 }
 
+
+//Basic search, looks for the string and grabs ~500 characters around it.
+//Does not account for doubles within that range.
 func (s *Searcher) Search(query string) []string {
 	idxs := s.SuffixArray.Lookup([]byte(query), -1)
 	results := []string{}
+	if idxs == nil {
+		results = append(results, "No Results Found")
+		return results
+	}
+	linebreakBytes := []byte("\r\n\r\n")
 	for _, idx := range idxs {
-		results = append(results, s.CompleteWorks[idx-250:idx+250])
+		lineStart := -1
+		lineEnd := -1
+		searchidxstart := idx
+		searchidxend := idx
+
+		for lineStart < 0 {
+			bytesToCheck := []byte(s.CompleteWorks[searchidxstart-4:searchidxstart])
+			if (bytes.Contains(bytesToCheck, linebreakBytes)) || (searchidxstart == 0) {
+				lineStart = searchidxstart
+				fmt.Println(lineStart)
+			} else {
+				searchidxstart--
+			}
+		}
+
+		for lineEnd < 0 {
+			bytesToCheck := []byte(s.CompleteWorks[searchidxend:searchidxend+4])
+			if (bytes.Contains(bytesToCheck, linebreakBytes)) ||  (searchidxend + 1 == len(s.CompleteWorks)){
+				lineEnd = searchidxend
+				fmt.Println(lineEnd)
+			} else {
+				searchidxend++
+			}
+		}
+		results = append(results, s.CompleteWorks[lineStart:lineEnd])
 	}
 	return results
 }
+
