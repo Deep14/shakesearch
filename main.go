@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+    "regexp"
 )
 
 func main() {
@@ -37,8 +38,10 @@ func main() {
 }
 
 type Searcher struct {
-	CompleteWorks string
-	SuffixArray    *suffixarray.Index
+	Sonnets string
+    Plays   string
+	SonnetSuffixArray    *suffixarray.Index
+    PlaySuffixArray      *suffixarray.Index
 }
 
 type SafeMap struct{
@@ -55,17 +58,41 @@ func handleSearch(searcher Searcher) func(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		results := searcher.Search(query[0])
-		buf := &bytes.Buffer{}
-		enc := json.NewEncoder(buf)
-		err := enc.Encode(results)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("encoding failure"))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(buf.Bytes())
+		Sonnetresults := searcher.SonnetSearch(query[0])
+        Playresults   := searcher.PlaySearch(query[0])
+
+        results := append([]string{"SONNET RESULTS \n\n"}, Sonnetresults...)
+        results = append(results,  []string{"\n\n PLAY RESULTS \n\n"}...)
+        results = append(results, Playresults...)
+        buf := &bytes.Buffer{}
+        enc := json.NewEncoder(buf)
+        err := enc.Encode(results)
+        if err != nil {
+            w.WriteHeader(http.StatusInternalServerError)
+            w.Write([]byte("encoding failure"))
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        w.Write(buf.Bytes())
+
+
+		// sBuf := &bytes.Buffer{}
+		// sEnc := json.NewEncoder(sBuf)
+		// sErr := sEnc.Encode(Sonnetresults)
+
+  //       pBuf := &bytes.Buffer{}
+  //       pEnc := json.NewEncoder(pBuf)
+  //       pErr := pEnc.Encode(Playresults)
+		// if pErr != nil || sErr != nil {
+		// 	w.WriteHeader(http.StatusInternalServerError)
+		// 	w.Write([]byte("encoding failure"))
+		// 	return
+		// }
+		// w.Header().Set("Content-Type", "application/json")
+  //       w.Write([]byte("SONNET RESULTS \n\n"))
+		// w.Write(sBuf.Bytes())
+  //       w.Write([]byte("\n\n PLAY RESULTS \n\n"))
+  //       w.Write(pBuf.Bytes())
 	}
 }
 
@@ -74,15 +101,50 @@ func (s *Searcher) Load(filename string) error {
 	if err != nil {
 		return fmt.Errorf("Load: %w", err)
 	}
-	s.CompleteWorks = string(dat)
-	s.SuffixArray = suffixarray.New(dat)
+
+    //preprocessing step
+    completeWorks := string(dat)
+    slicingSuffixArr := suffixarray.New(dat)
+    sonnetLocs := slicingSuffixArr.Lookup([]byte("THE SONNETS"), -1) //There will only be 2 of these, kinda hacky approach
+    sonnetEnd := slicingSuffixArr.Lookup([]byte("THE END"), -1) //Will only be 1 of these; also very hacky
+    playEnd := slicingSuffixArr.Lookup([]byte("FINIS"), -1) //Will only be 1 of these; also very hacky
+    var sonnetStart int
+    if sonnetLocs[0] > sonnetLocs[1] {
+        sonnetStart = sonnetLocs[0]
+    } else {
+        sonnetStart = sonnetLocs[1]
+    }
+
+    //setting up searcher
+	s.Sonnets = completeWorks[sonnetStart:sonnetEnd[0]+7]
+	s.SonnetSuffixArray = suffixarray.New([]byte(completeWorks[sonnetStart:sonnetEnd[0]+7]))
+
+    s.Plays = completeWorks[sonnetEnd[0]+7:playEnd[0]+5]
+    s.PlaySuffixArray = suffixarray.New([]byte(completeWorks[sonnetEnd[0]+7:playEnd[0]+5]))
 	return nil
 }
 
 
+func (s *Searcher) SonnetSearch(query string) []string {
+    return s.Search(query, "[0-9]+\r\n\r\n", true)
+}
+
+func (s *Searcher) PlaySearch(query string) []string {
+    return s.Search(query, "[A-Z]+.\r\n", false)
+}
+
 //Finds the target string and extracts the full line of dialogue that it comes from.
-func (s *Searcher) Search(query string) []string {
-	idxs := s.SuffixArray.Lookup([]byte(query), -1)
+func (s *Searcher) Search(query string, lineBreakRegex string, isSonnet bool) []string {
+    var works string
+    var idxs []int
+    if isSonnet {
+        works = s.Sonnets
+        idxs  = s.SonnetSuffixArray.Lookup([]byte(query), -1)
+    } else{
+        works = s.Plays
+        idxs = s.PlaySuffixArray.Lookup([]byte(query), -1)
+    }
+
     results := []string{}
     if idxs == nil {
         results = append(results, "No Results Found")
@@ -92,7 +154,7 @@ func (s *Searcher) Search(query string) []string {
     //New Set of strings to help with de-duplication
     safemap := SafeMap{}
     safemap.resSet = make(map[string]bool)
-    linebreakBytes := []byte("\r\n\r\n")
+    windowSize := 7 //basically magic, could be more robust. Equivalent to "123\r\n\r\n", the largest header in the sonnets
     var resultsFinderWG sync.WaitGroup
     resultsFinderWG.Add(len(idxs))
     for _, idx := range idxs {
@@ -105,8 +167,9 @@ func (s *Searcher) Search(query string) []string {
             searchidxend := idx
 
             for lineStart < 0 {
-                bytesToCheck := []byte(s.CompleteWorks[searchidxstart-4:searchidxstart])
-                if (bytes.Contains(bytesToCheck, linebreakBytes)) || (searchidxstart == 0) {
+                bytesToCheck := []byte(works[searchidxstart-windowSize:searchidxstart])
+                matchRes, _ := regexp.Match(lineBreakRegex, bytesToCheck)
+                if (matchRes || searchidxstart == 0) {
                     lineStart = searchidxstart
                 } else {
                     searchidxstart--
@@ -114,15 +177,16 @@ func (s *Searcher) Search(query string) []string {
             }
 
             for lineEnd < 0 {
-                bytesToCheck := []byte(s.CompleteWorks[searchidxend:searchidxend+4])
-                if (bytes.Contains(bytesToCheck, linebreakBytes)) ||  (searchidxend + 1 == len(s.CompleteWorks)){
+                bytesToCheck := []byte(works[searchidxend:searchidxend+windowSize])
+                matchRes, _ := regexp.Match(lineBreakRegex, bytesToCheck)
+                if (matchRes ||  searchidxend + 1 == len(works)){
                     lineEnd = searchidxend
                 } else {
                     searchidxend++
                 }
             }
             safemap.mut.Lock()
-            safemap.resSet[s.CompleteWorks[lineStart:lineEnd]] = true
+            safemap.resSet[works[lineStart:lineEnd]] = true
             safemap.mut.Unlock()
         }(s, idx)
     }
@@ -133,4 +197,5 @@ func (s *Searcher) Search(query string) []string {
     }
 	return results
 }
+
 
