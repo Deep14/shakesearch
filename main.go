@@ -9,7 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	//"sync"
+	"sync"
 )
 
 func main() {
@@ -75,8 +75,7 @@ func (s *Searcher) Load(filename string) error {
 }
 
 
-//Basic search, looks for the string and grabs ~500 characters around it.
-//Does not account for doubles within that range.
+//Finds the target string and extracts the full line of dialogue that it comes from.
 func (s *Searcher) Search(query string) []string {
 	idxs := s.SuffixArray.Lookup([]byte(query), -1)
 	results := []string{}
@@ -85,33 +84,38 @@ func (s *Searcher) Search(query string) []string {
 		return results
 	}
 	linebreakBytes := []byte("\r\n\r\n")
+	var resultsFinderWG sync.WaitGroup
+	resultsFinderWG.Add(len(idxs))
 	for _, idx := range idxs {
-		lineStart := -1
-		lineEnd := -1
-		searchidxstart := idx
-		searchidxend := idx
+		go func(s *Searcher, idx int){
+			defer resultsFinderWG.Done()
 
-		for lineStart < 0 {
-			bytesToCheck := []byte(s.CompleteWorks[searchidxstart-4:searchidxstart])
-			if (bytes.Contains(bytesToCheck, linebreakBytes)) || (searchidxstart == 0) {
-				lineStart = searchidxstart
-				fmt.Println(lineStart)
-			} else {
-				searchidxstart--
-			}
-		}
+			lineStart := -1
+			lineEnd := -1
+			searchidxstart := idx
+			searchidxend := idx
 
-		for lineEnd < 0 {
-			bytesToCheck := []byte(s.CompleteWorks[searchidxend:searchidxend+4])
-			if (bytes.Contains(bytesToCheck, linebreakBytes)) ||  (searchidxend + 1 == len(s.CompleteWorks)){
-				lineEnd = searchidxend
-				fmt.Println(lineEnd)
-			} else {
-				searchidxend++
+			for lineStart < 0 {
+				bytesToCheck := []byte(s.CompleteWorks[searchidxstart-4:searchidxstart])
+				if (bytes.Contains(bytesToCheck, linebreakBytes)) || (searchidxstart == 0) {
+					lineStart = searchidxstart
+				} else {
+					searchidxstart--
+				}
 			}
-		}
-		results = append(results, s.CompleteWorks[lineStart:lineEnd])
+
+			for lineEnd < 0 {
+				bytesToCheck := []byte(s.CompleteWorks[searchidxend:searchidxend+4])
+				if (bytes.Contains(bytesToCheck, linebreakBytes)) ||  (searchidxend + 1 == len(s.CompleteWorks)){
+					lineEnd = searchidxend
+				} else {
+					searchidxend++
+				}
+			}
+			results = append(results, s.CompleteWorks[lineStart:lineEnd])
+		}(s, idx)
 	}
+
+	resultsFinderWG.Wait()
 	return results
 }
-
