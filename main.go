@@ -130,18 +130,21 @@ func (s *Searcher) SonnetSearch(query string) []string {
 }
 
 func (s *Searcher) PlaySearch(query string) []string {
-    return s.Search(query, "[A-Z]+.\r\n", false)
+    return s.Search(query, "\r\n\r\n[A-Z]+.", false)
 }
 
 //Finds the target string and extracts the full line of dialogue that it comes from.
 func (s *Searcher) Search(query string, lineBreakRegex string, isSonnet bool) []string {
     var works string
     var idxs []int
+    var windowSize int
     if isSonnet {
         works = s.Sonnets
+        windowSize = 5 //basically magic, could be more robust. Equivalent to "1\r\n\r\n", the smallest header in the sonnets
         idxs  = s.SonnetSuffixArray.Lookup([]byte(query), -1)
     } else{
         works = s.Plays
+        windowSize = 6 //basically magic, could be more robust.  Equivalent to "\r\n\r\n[A-Z].", the smallest predecessor for a play dialogue
         idxs = s.PlaySuffixArray.Lookup([]byte(query), -1)
     }
 
@@ -154,7 +157,7 @@ func (s *Searcher) Search(query string, lineBreakRegex string, isSonnet bool) []
     //New Set of strings to help with de-duplication
     safemap := SafeMap{}
     safemap.resSet = make(map[string]bool)
-    windowSize := 7 //basically magic, could be more robust. Equivalent to "123\r\n\r\n", the largest header in the sonnets
+
     var resultsFinderWG sync.WaitGroup
     resultsFinderWG.Add(len(idxs))
     for _, idx := range idxs {
@@ -170,7 +173,12 @@ func (s *Searcher) Search(query string, lineBreakRegex string, isSonnet bool) []
                 bytesToCheck := []byte(works[searchidxstart-windowSize:searchidxstart])
                 matchRes, _ := regexp.Match(lineBreakRegex, bytesToCheck)
                 if (matchRes || searchidxstart == 0) {
-                    lineStart = searchidxstart
+                    if isSonnet {
+                        lineStart = searchidxstart
+                    } else {
+                        lineStart = searchidxstart - windowSize
+                    }
+                    
                 } else {
                     searchidxstart--
                 }
@@ -180,7 +188,12 @@ func (s *Searcher) Search(query string, lineBreakRegex string, isSonnet bool) []
                 bytesToCheck := []byte(works[searchidxend:searchidxend+windowSize])
                 matchRes, _ := regexp.Match(lineBreakRegex, bytesToCheck)
                 if (matchRes ||  searchidxend + 1 == len(works)){
-                    lineEnd = searchidxend
+                    if isSonnet {
+                        lineEnd = searchidxend - windowSize
+                    } else {
+                        lineEnd = searchidxend
+                    }
+                    
                 } else {
                     searchidxend++
                 }
