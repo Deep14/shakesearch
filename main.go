@@ -58,11 +58,15 @@ func handleSearch(searcher Searcher) func(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		Sonnetresults := searcher.SonnetSearch(query[0])
-        Playresults   := searcher.PlaySearch(query[0])
+        results := make([]string, 0)
+        searchResults := make(chan []string)
 
-        results := append([]string{"SONNET RESULTS \n\n"}, Sonnetresults...)
-        results = append(results,  []string{"\n\n PLAY RESULTS \n\n"}...)
+		go searcher.SonnetSearch(query[0], searchResults)
+        go searcher.PlaySearch(query[0], searchResults)
+
+        Sonnetresults := <- searchResults
+        results = append(results, Sonnetresults...)
+        Playresults := <- searchResults
         results = append(results, Playresults...)
         buf := &bytes.Buffer{}
         enc := json.NewEncoder(buf)
@@ -125,12 +129,12 @@ func (s *Searcher) Load(filename string) error {
 }
 
 
-func (s *Searcher) SonnetSearch(query string) []string {
-    return s.Search(query, "[0-9]+\r\n\r\n", true)
+func (s *Searcher) SonnetSearch(query string, res chan []string) {
+    res <- s.Search(query, "[0-9]+\r\n\r\n", true)
 }
 
-func (s *Searcher) PlaySearch(query string) []string {
-    return s.Search(query, "\r\n\r\n[A-Z]+.", false)
+func (s *Searcher) PlaySearch(query string, res chan []string) {
+    res <- s.Search(query, "\r\n\r\n[A-Z]+.", false)
 }
 
 //Finds the target string and extracts the full line of dialogue that it comes from.
@@ -138,17 +142,20 @@ func (s *Searcher) Search(query string, lineBreakRegex string, isSonnet bool) []
     var works string
     var idxs []int
     var windowSize int
+    var results []string
     if isSonnet {
         works = s.Sonnets
         windowSize = 5 //basically magic, could be more robust. Equivalent to "1\r\n\r\n", the smallest header in the sonnets
         idxs  = s.SonnetSuffixArray.Lookup([]byte(query), -1)
+        results = append(results, "SONNET RESULTS \n\n")
     } else{
         works = s.Plays
         windowSize = 6 //basically magic, could be more robust.  Equivalent to "\r\n\r\n[A-Z].", the smallest predecessor for a play dialogue
         idxs = s.PlaySuffixArray.Lookup([]byte(query), -1)
+        results = append(results, "PLAY RESULTS \n\n")
     }
 
-    results := []string{}
+
     if idxs == nil {
         results = append(results, "No Results Found")
         return results
